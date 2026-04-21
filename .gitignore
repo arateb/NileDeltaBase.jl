@@ -1,0 +1,28 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/deps/deps.jl
+/deps/build.log
+
+# Editor
+.DS_Store
+.vscode/
+*.swp
+*~
+
+# Data — NileDeltaBase data lives outside the package (NILEDELTABASE_ROOT,
+# default /data4/EGY/NileDeltaBase).  Never commit DEMs, VRTs, or derived
+# rasters into the package repo.
+data/
+logs/
+results/
+*.tif
+*.tiff
+*.vrt
+*.hdr
+*.h5
+*.nc
+*.zip
+*.gpkg
