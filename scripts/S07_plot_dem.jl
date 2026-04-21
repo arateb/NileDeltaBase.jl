@@ -28,9 +28,11 @@ using Statistics
 const ROOT = NDB._root()
 const DEM_TIF = joinpath(ROOT, "data/derived/display/nile_elevation_display.tif")
 const HLS_TIF = joinpath(ROOT, "data/derived/display/nile_hillshade_display.tif")
+const SLP_TIF = joinpath(ROOT, "data/derived/display/nile_slope_display.tif")
 
 isfile(DEM_TIF) || error("Missing $DEM_TIF — run S06_derived_display.sh first")
 isfile(HLS_TIF) || error("Missing $HLS_TIF — run S06_derived_display.sh first")
+isfile(SLP_TIF) || error("Missing $SLP_TIF — run S06_derived_display.sh first")
 
 # ── Raster loading via GDAL CLI (ENVI binary) ───────────────────────────────
 
@@ -64,9 +66,10 @@ function _read_raster(tif::String)
     return arr, lons, lats
 end
 
-@info "Loading elevation and hillshade..."
+@info "Loading elevation, hillshade, slope..."
 elev, lons, lats = _read_raster(DEM_TIF)
 hlsh, _,    _    = _read_raster(HLS_TIF)
+slp,  _,    _    = _read_raster(SLP_TIF)
 ny, nx = size(elev)
 
 valid    = .!isnan.(elev)
@@ -75,7 +78,25 @@ below    = valid .& (elev .< 0f0)
 
 @info "Grid" size=(ny, nx) lon=(first(lons), last(lons)) lat=(first(lats), last(lats))
 @info "Elevation stats" min=minimum(elev[valid]) max=maximum(elev[valid]) median=median(elev[valid])
+@info "Hillshade stats" min=minimum(hlsh[valid]) max=maximum(hlsh[valid]) median=median(hlsh[valid])
 @info "Pixels below 0 m: $(sum(below))"
+
+# Percentile stretch of the hillshade — most of the bbox is the ~0-slope
+# Delta, which compresses the raw gdaldem distribution into a narrow band
+# near ~180.  Stretch p2..p98 across [0, 1] so the genuine variation (Sinai
+# relief, Delta escarpment, canal levees) shows up on the map.
+hlsh_vals = filter(!isnan, hlsh[valid])
+h_p2  = Float32(quantile(hlsh_vals, 0.02))
+h_p98 = Float32(quantile(hlsh_vals, 0.98))
+h_range = max(h_p98 - h_p2, 1f0)
+hlsh_n  = clamp.((hlsh .- h_p2) ./ h_range, 0f0, 1f0)
+@info "Hillshade stretch" p2=h_p2 p98=h_p98 range=h_range
+
+# Slope-darkening multiplier — steep slopes (≳ 15°) get visibly darker even
+# after hillshade stretch.  Slopes are in degrees; clamp to [0, 35] and map
+# to an extra attenuation in [0, 0.35].
+slp_n  = clamp.(slp ./ 35f0, 0f0, 1f0)
+slp_n[invalid] .= 0f0
 
 # ── Classify water: ocean = NaN connected to bbox boundary; lake = enclosed NaN
 
@@ -139,12 +160,16 @@ const HYPSO_STOPS = [
     return HYPSO_STOPS[end][2]
 end
 
-# Hillshade intensity scaled to [0.45, 1.0]; darkens shaded slopes without
-# crushing them to black.
-@inline function shade(c::RGBf, h::Float32)
-    h_n = isnan(h) ? 0.8f0 : clamp(h / 255f0, 0f0, 1f0)
-    s   = 0.45f0 + 0.55f0 * h_n
-    RGBf(c.r * s, c.g * s, c.b * s)
+# Hillshade-derived intensity in [0.35, 1.15] (values > 1 get clamped after
+# channel multiply).  Steep slopes further attenuate by up to 0.35, so
+# Sinai escarpments and ridgelines read as proper shadows.
+@inline function shade(c::RGBf, hn::Float32, sn::Float32)
+    hn = isnan(hn) ? 0.5f0 : hn
+    s  = 0.35f0 + 0.80f0 * hn - 0.35f0 * sn
+    s  = clamp(s, 0f0, 1.15f0)
+    RGBf(clamp(c.r * s, 0f0, 1f0),
+         clamp(c.g * s, 0f0, 1f0),
+         clamp(c.b * s, 0f0, 1f0))
 end
 
 # ── Build the single RGB image ──────────────────────────────────────────────
@@ -156,9 +181,9 @@ rgb = Matrix{RGBf}(undef, ny, nx)
     elseif lake[i, j]
         rgb[i, j] = LAKE_BLUE
     elseif below[i, j]
-        rgb[i, j] = shade(SEA_BLUE, hlsh[i, j])
+        rgb[i, j] = shade(SEA_BLUE, hlsh_n[i, j], slp_n[i, j])
     else
-        rgb[i, j] = shade(hypsometric(elev[i, j]), hlsh[i, j])
+        rgb[i, j] = shade(hypsometric(elev[i, j]), hlsh_n[i, j], slp_n[i, j])
     end
 end
 
@@ -232,14 +257,14 @@ ylims!(ax, bbox.lat_min, bbox.lat_max)
 
 # Swatches sampled from the actual hypsometric ramp so the legend matches
 # what's on the map (approximating the low/high land entries).
-elev_low  = shade(hypsometric(5f0),   220f0)
-elev_mid  = shade(hypsometric(100f0), 220f0)
-elev_high = shade(hypsometric(700f0), 220f0)
+elev_low  = shade(hypsometric(5f0),   0.75f0, 0f0)
+elev_mid  = shade(hypsometric(100f0), 0.75f0, 0f0)
+elev_high = shade(hypsometric(700f0), 0.75f0, 0f0)
 
 elems = [
     PolyElement(color=OCEAN_BLUE),
     PolyElement(color=LAKE_BLUE),
-    PolyElement(color=shade(SEA_BLUE, 220f0)),
+    PolyElement(color=shade(SEA_BLUE, 0.75f0, 0f0)),
     PolyElement(color=elev_low),
     PolyElement(color=elev_mid),
     PolyElement(color=elev_high),

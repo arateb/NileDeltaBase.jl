@@ -39,8 +39,12 @@ gdalwarp -overwrite \
   -co TILED=YES -co COMPRESS=DEFLATE \
   "$VRT" "$DEM" 2>&1 | tail -5 | tee -a "$LOG"
 
-echo "[hillshade] multidirectional" | tee -a "$LOG"
-gdaldem hillshade -multidirectional \
+echo "[hillshade] multidirectional, -s 111120 (deg→m scaling), z=2" | tee -a "$LOG"
+# -s 111120   : horizontal scale — lon/lat are in degrees, elevation in m
+# -z 2        : vertical exaggeration — boosts relief on the flat Delta
+# -igor       : drops the hard dark side of standard hillshade, keeps both
+#               sides lit (better for cartographic backgrounds)
+gdaldem hillshade -multidirectional -s 111120 -z 2 \
   -co TILED=YES -co COMPRESS=DEFLATE \
   "$DEM" "$HLS" 2>&1 | tail -3 | tee -a "$LOG"
 
