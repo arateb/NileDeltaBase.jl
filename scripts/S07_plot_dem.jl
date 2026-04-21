@@ -195,7 +195,7 @@ map_wh = (bbox.lon_max - bbox.lon_min) / (bbox.lat_max - bbox.lat_min)
 fig = FigStd.figure(width=:wide, aspect=1.0 / map_wh * 1.22)
 ax = Axis(fig[1, 1];
           xlabel="Longitude (°E)", ylabel="Latitude (°N)",
-          title="Nile Delta & North Sinai — fused 30 m DEM (COP-GLO30 / FABDEM / DeltaDTM)",
+          title="Nile Delta — fused 30 m DEM (COP-GLO30 / FABDEM / DeltaDTM)",
           aspect=DataAspect())
 
 # image! takes (x, y, mat) with mat[i,j] at (x[i], y[j]).  Our rgb is (ny, nx)
@@ -235,13 +235,13 @@ label_pts = [
     ("Damietta",     31.82, 31.42),
     ("Port Said",    32.28, 31.26),
     ("Ismailia",     32.27, 30.59),
-    ("Suez",         32.55, 29.97),
     ("L. Manzala",   31.95, 31.32),
     ("L. Burullus",  30.95, 31.50),
-    ("L. Bardawil",  33.10, 31.20),
-    ("El Arish",     33.80, 31.13),
-    ("Rafah",        34.24, 31.29),
-    ("Taba",         34.89, 29.50),
+    ("L. Idku",      30.25, 31.28),
+    ("Tanta",        30.99, 30.79),
+    ("Mansoura",     31.38, 31.04),
+    ("Zagazig",      31.52, 30.59),
+    ("Banha",        31.18, 30.46),
 ]
 for (name, lon, lat) in label_pts
     scatter!(ax, [lon], [lat]; color=:black, marker=:circle, markersize=5)

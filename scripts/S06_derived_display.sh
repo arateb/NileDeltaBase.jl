@@ -21,8 +21,8 @@ echo "Started: $(date -u +%FT%TZ)" | tee -a "$LOG"
 
 [[ -f "$VRT" ]] || { echo "Missing $VRT — run S04 first" | tee -a "$LOG"; exit 1; }
 
-XMIN=29.0; YMIN=29.3; XMAX=35.1; YMAX=31.8
-RES=0.003   # ~330 m display grid → 2033 × 834 pixels
+XMIN=29.6; YMIN=30.0; XMAX=32.4; YMAX=31.65
+RES=0.003   # ~330 m display grid
 
 DEM="$DISP/nile_elevation_display.tif"
 HLS="$DISP/nile_hillshade_display.tif"

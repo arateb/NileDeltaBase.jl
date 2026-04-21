@@ -89,11 +89,10 @@ _logdir()   = joinpath(_root(), "logs")
 
 # ── Constants ────────────────────────────────────────────────────────
 
-# Covers Cairo (south) → Mediterranean (north), and Alexandria / west-Nubaria
-# (west) → Taba at the Gulf of Aqaba (east). Includes the Nile Delta, the
-# Suez Canal, and the entire north Sinai Peninsula (Bardawil Lagoon, El Arish).
-# ~680 km × 275 km ≈ 187,000 km².
-const BBOX = (lon_min=29.0, lat_min=29.3, lon_max=35.1, lat_max=31.8)
+# Nile Delta only — Cairo (south) → Mediterranean coast (north),
+# Alexandria / West Nubaria (west) → Port Said / Suez Canal mouth (east).
+# ~310 km × 180 km ≈ 56,000 km².
+const BBOX = (lon_min=29.6, lat_min=30.0, lon_max=32.4, lat_max=31.65)
 const DRES_DISPLAY = 0.01   # ~1 km display grid
 
 # Sentinel-1 InSAR frames currently processed
@@ -115,16 +114,8 @@ const HOTSPOTS = (
     manzala    = (lon=(31.6, 32.3), lat=(31.1, 31.4), desc="Lake Manzala"),
     burullus   = (lon=(30.5, 31.3), lat=(31.3, 31.6), desc="Lake Burullus"),
     nubaria    = (lon=(29.5, 30.5), lat=(30.3, 30.9), desc="West Nubaria reclamation"),
-    # Suez Canal corridor
-    suez_canal = (lon=(32.3, 32.6), lat=(29.9, 31.3), desc="Suez Canal"),
+    # Eastern edge (Suez Canal mouth only — Sinai is out of the bbox)
     ismailia   = (lon=(32.2, 32.4), lat=(30.5, 30.7), desc="Ismailia"),
-    # North Sinai
-    bardawil   = (lon=(32.7, 33.5), lat=(31.0, 31.3), desc="Lake Bardawil lagoon"),
-    el_arish   = (lon=(33.7, 33.9), lat=(31.1, 31.2), desc="El Arish"),
-    rafah      = (lon=(34.2, 34.4), lat=(31.2, 31.4), desc="Rafah / N Sinai coast"),
-    # East Sinai / Gulf of Aqaba
-    taba       = (lon=(34.8, 35.0), lat=(29.4, 29.6), desc="Taba / Gulf of Aqaba head"),
-    nuweiba    = (lon=(34.6, 34.8), lat=(28.9, 29.1), desc="Nuweiba (at south edge of bbox)"),
 )
 
 const LAYERS = (
