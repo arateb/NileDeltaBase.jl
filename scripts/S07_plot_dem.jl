@@ -1,10 +1,11 @@
 #!/usr/bin/env julia
 # Publication figure of the fused Nile Delta + North Sinai DEM.
-#   - Grayscale multidirectional hillshade base
-#   - Elevation gradient overlay (lightens high ground)
-#   - Below-sea-level land cells in SEA blue
-#   - Lakes and lagoons from Natural Earth 10m, in a DIFFERENT (darker) blue
-#   - Coastline + country borders, hotspot labels
+# Single RGB image built as hypsometric tint × hillshade:
+#   - ocean (NaN pixels connected to the bbox boundary) → OCEAN_BLUE
+#   - enclosed NaN (lakes / lagoons)                    → LAKE_BLUE
+#   - land with elevation < 0                           → SEA_BLUE tinted
+#   - land with elevation ≥ 0                           → terrain palette
+# Coastline is therefore defined by the DEM itself (no Natural Earth overlay).
 
 using Pkg
 Pkg.activate(dirname(@__DIR__))
@@ -31,7 +32,7 @@ const HLS_TIF = joinpath(ROOT, "data/derived/display/nile_hillshade_display.tif"
 isfile(DEM_TIF) || error("Missing $DEM_TIF — run S06_derived_display.sh first")
 isfile(HLS_TIF) || error("Missing $HLS_TIF — run S06_derived_display.sh first")
 
-# ── Raster loading via GDAL CLI (ENVI binary, same pattern as GulfBase) ─────
+# ── Raster loading via GDAL CLI (ENVI binary) ───────────────────────────────
 
 function _read_raster(tif::String)
     info = read(`gdalinfo -json $tif`, String)
@@ -40,7 +41,7 @@ function _read_raster(tif::String)
     m_geo = match(r"\"geoTransform\":\s*\[([^\]]+)\]", info)
     gt = parse.(Float64, strip.(split(m_geo[1], ',')))
     xmin = gt[1]; dx = gt[2]
-    ymax = gt[4]; dy = gt[6]  # negative
+    ymax = gt[4]; dy = gt[6]
     m_nd = match(r"\"noDataValue\":\s*([-\d.eE+]+)", info)
     nd = m_nd !== nothing ? parse(Float32, m_nd[1]) : -9999f0
 
@@ -57,7 +58,7 @@ function _read_raster(tif::String)
         arr[r, :] = data[:, ny - r + 1]
     end
     arr[arr .== nd] .= NaN32
-    ymin = ymax + dy*ny   # dy is negative
+    ymin = ymax + dy*ny
     lons = collect(range(xmin + dx/2;    step=dx,  length=nx))
     lats = collect(range(ymin + (-dy)/2; step=-dy, length=ny))
     return arr, lons, lats
@@ -66,81 +67,119 @@ end
 @info "Loading elevation and hillshade..."
 elev, lons, lats = _read_raster(DEM_TIF)
 hlsh, _,    _    = _read_raster(HLS_TIF)
+ny, nx = size(elev)
 
-valid = .!isnan.(elev)
-@info "Grid" size=size(elev) lon=(first(lons), last(lons)) lat=(first(lats), last(lats))
+valid    = .!isnan.(elev)
+invalid  = .!valid
+below    = valid .& (elev .< 0f0)
+
+@info "Grid" size=(ny, nx) lon=(first(lons), last(lons)) lat=(first(lats), last(lats))
 @info "Elevation stats" min=minimum(elev[valid]) max=maximum(elev[valid]) median=median(elev[valid])
-@info "Pixels below 0 m: $(sum(valid .& (elev .< 0)))"
+@info "Pixels below 0 m: $(sum(below))"
 
-# ── Colours ────────────────────────────────────────────────────────────────
-const OCEAN_BLUE = RGBAf(0.55, 0.73, 0.88, 1.0)  # open sea / nodata background
-const SEA_BLUE   = RGBAf(0.30, 0.56, 0.78, 1.0)  # land below sea level
-const LAKE_BLUE  = RGBAf(0.14, 0.32, 0.55, 1.0)  # lakes / lagoons (darker, distinct)
+# ── Classify water: ocean = NaN connected to bbox boundary; lake = enclosed NaN
+
+function _flood_boundary!(ocean::AbstractMatrix{Bool}, invalid::AbstractMatrix{Bool})
+    ny, nx = size(invalid)
+    q = Tuple{Int,Int}[]
+    for j in 1:nx
+        if invalid[1,  j]; ocean[1,  j] = true; push!(q, (1,  j)); end
+        if invalid[ny, j]; ocean[ny, j] = true; push!(q, (ny, j)); end
+    end
+    for i in 1:ny
+        if invalid[i, 1 ]; ocean[i, 1 ] = true; push!(q, (i, 1 )); end
+        if invalid[i, nx]; ocean[i, nx] = true; push!(q, (i, nx)); end
+    end
+    head = 1
+    while head <= length(q)
+        i, j = q[head]; head += 1
+        for (di, dj) in ((-1,0),(1,0),(0,-1),(0,1))
+            ni, nj = i+di, j+dj
+            if 1 <= ni <= ny && 1 <= nj <= nx && invalid[ni,nj] && !ocean[ni,nj]
+                ocean[ni,nj] = true
+                push!(q, (ni, nj))
+            end
+        end
+    end
+end
+
+ocean = falses(ny, nx)
+_flood_boundary!(ocean, invalid)
+lake = invalid .& .!ocean
+@info "Water classes" ocean=sum(ocean) lake=sum(lake) below_sea_land=sum(below)
+
+# ── Colour palette ──────────────────────────────────────────────────────────
+
+const OCEAN_BLUE = RGBf(0.55, 0.73, 0.88)
+const SEA_BLUE   = RGBf(0.33, 0.57, 0.80)   # land below sea level (SEA_BLUE tint)
+const LAKE_BLUE  = RGBf(0.12, 0.28, 0.52)   # lakes / lagoons (darker, distinct)
+
+# Hypsometric tint — pale green coastal → tan → brown → gray peaks
+const HYPSO_STOPS = [
+    (0f0,    RGBf(0.82, 0.90, 0.72)),   # coastal green
+    (20f0,   RGBf(0.92, 0.93, 0.68)),   # pale yellow
+    (100f0,  RGBf(0.90, 0.82, 0.58)),   # tan
+    (300f0,  RGBf(0.78, 0.64, 0.42)),   # brown
+    (700f0,  RGBf(0.58, 0.44, 0.30)),   # dark brown
+    (1300f0, RGBf(0.78, 0.72, 0.68)),   # gray peaks
+]
+
+@inline function hypsometric(e::Float32)
+    e <= HYPSO_STOPS[1][1] && return HYPSO_STOPS[1][2]
+    @inbounds for k in 1:length(HYPSO_STOPS)-1
+        e0, c0 = HYPSO_STOPS[k]
+        e1, c1 = HYPSO_STOPS[k+1]
+        if e <= e1
+            t = (e - e0) / (e1 - e0)
+            return RGBf((1-t)*c0.r + t*c1.r,
+                        (1-t)*c0.g + t*c1.g,
+                        (1-t)*c0.b + t*c1.b)
+        end
+    end
+    return HYPSO_STOPS[end][2]
+end
+
+# Hillshade intensity scaled to [0.45, 1.0]; darkens shaded slopes without
+# crushing them to black.
+@inline function shade(c::RGBf, h::Float32)
+    h_n = isnan(h) ? 0.8f0 : clamp(h / 255f0, 0f0, 1f0)
+    s   = 0.45f0 + 0.55f0 * h_n
+    RGBf(c.r * s, c.g * s, c.b * s)
+end
+
+# ── Build the single RGB image ──────────────────────────────────────────────
+
+rgb = Matrix{RGBf}(undef, ny, nx)
+@inbounds for i in 1:ny, j in 1:nx
+    if ocean[i, j]
+        rgb[i, j] = OCEAN_BLUE
+    elseif lake[i, j]
+        rgb[i, j] = LAKE_BLUE
+    elseif below[i, j]
+        rgb[i, j] = shade(SEA_BLUE, hlsh[i, j])
+    else
+        rgb[i, j] = shade(hypsometric(elev[i, j]), hlsh[i, j])
+    end
+end
 
 # ── Build the figure ────────────────────────────────────────────────────────
 
 bbox = NDB.BBOX
-# Map width/height ratio — figstd's `aspect` is figure height/width.
 map_wh = (bbox.lon_max - bbox.lon_min) / (bbox.lat_max - bbox.lat_min)
-# Reserve ~22% width for the legend column; figure height/width matches the
-# map aspect with that legend margin included.
+# ~22% extra width for the legend column; reflects in figure height.
 fig = FigStd.figure(width=:wide, aspect=1.0 / map_wh * 1.22)
 ax = Axis(fig[1, 1];
           xlabel="Longitude (°E)", ylabel="Latitude (°N)",
           title="Nile Delta & North Sinai — fused 30 m DEM (COP-GLO30 / FABDEM / DeltaDTM)",
           aspect=DataAspect())
 
-# 1) Ocean background rectangle (covers everything; land painted over it)
-poly!(ax, Rect2f(bbox.lon_min, bbox.lat_min,
-                 bbox.lon_max - bbox.lon_min,
-                 bbox.lat_max - bbox.lat_min);
-      color=OCEAN_BLUE, strokewidth=0)
+# image! takes (x, y, mat) with mat[i,j] at (x[i], y[j]).  Our rgb is (ny, nx)
+# with rows = lats ascending, cols = lons ascending; pass (lons, lats, rgb').
+image!(ax, (first(lons), last(lons)), (first(lats), last(lats)),
+       permutedims(rgb); interpolate=false)
 
-# 2) Grayscale hillshade as base (mask where DEM is nodata so ocean shows)
-hlsh_norm = Float32.(hlsh) ./ 255f0
-hlsh_norm[.!valid] .= NaN32
-heatmap!(ax, lons, lats, permutedims(hlsh_norm);
-         colormap=[RGBf(0.22,0.22,0.22), RGBf(0.95,0.95,0.95)],
-         nan_color=:transparent,
-         colorrange=(0.12, 0.95),
-         rasterize=5)
-
-# 3) Transparent elevation overlay — brightens higher ground
-elev_vis = copy(elev)
-elev_vis[.!valid] .= NaN32
-elev_vis[elev .< 0] .= NaN32   # below-sea-level handled separately
-heatmap!(ax, lons, lats, permutedims(clamp.(elev_vis, 0f0, 300f0));
-         colormap=[RGBAf(1,1,1,0.0), RGBAf(1,1,1,0.55)],
-         nan_color=:transparent,
-         colorrange=(0, 300),
-         rasterize=5)
-
-# 4) Land below sea level in SEA_BLUE
-below_mask = Float32.(valid .& (elev .< 0))
-below_mask[below_mask .== 0f0] .= NaN32
-heatmap!(ax, lons, lats, permutedims(below_mask);
-         colormap=[SEA_BLUE, SEA_BLUE],
-         nan_color=:transparent,
-         colorrange=(0.5, 1.5),
-         rasterize=5)
-
-# ── Helpers to plot Natural Earth features as plain polygons/lines.
-# poly!(ax, FeatureCollection) on a non-GeoAxis Axis recurses and blows the
-# stack; convert to basic geometries and iterate.
-function _plot_polys!(ax, fc; color, strokewidth=0.3, strokecolor=:black)
-    for feature in fc
-        geom = GeoMakie.geo2basic(feature.geometry)
-        if geom isa AbstractVector
-            for g in geom
-                poly!(ax, g; color=color, strokewidth=strokewidth,
-                      strokecolor=strokecolor)
-            end
-        else
-            poly!(ax, geom; color=color, strokewidth=strokewidth,
-                  strokecolor=strokecolor)
-        end
-    end
-end
+# Country borders only (coastline comes from the DEM mask itself).  Convert
+# FeatureCollection → basic geometries so plotting works on a plain Axis.
 function _plot_lines!(ax, fc; color, linewidth=0.5, linestyle=:solid)
     for feature in fc
         geom = GeoMakie.geo2basic(feature.geometry)
@@ -154,76 +193,65 @@ function _plot_lines!(ax, fc; color, linewidth=0.5, linestyle=:solid)
     end
 end
 
-# 5) Lakes and lagoons — Natural Earth 10m
-@info "Loading Natural Earth lakes 10m..."
-try
-    _plot_polys!(ax, naturalearth("lakes", 10);
-                 color=LAKE_BLUE,
-                 strokecolor=RGBAf(0.05,0.15,0.35,0.8))
-catch e
-    @warn "NE lakes 10m failed, trying 50m fallback" exception=e
-    try
-        _plot_polys!(ax, naturalearth("lakes", 50);
-                     color=LAKE_BLUE,
-                     strokecolor=RGBAf(0.05,0.15,0.35,0.8))
-    catch; end
-end
-
-# 6) Coastlines + country borders on top
-try
-    _plot_lines!(ax, naturalearth("coastline", 10);
-                 color=RGBAf(0.05,0.05,0.05,0.9), linewidth=0.5)
-catch e
-    @warn "coastline 10m failed" exception=e
-end
 try
     _plot_lines!(ax, naturalearth("admin_0_boundary_lines_land", 10);
-                 color=RGBAf(0.15,0.15,0.15,0.8), linewidth=0.4,
-                 linestyle=:dash)
+                 color=RGBAf(0.10, 0.10, 0.10, 0.85),
+                 linewidth=0.6, linestyle=:dash)
 catch e
     @warn "borders 10m failed" exception=e
 end
 
-# 7) Hotspot labels
+# ── City labels: black text, no halo ────────────────────────────────────────
+
 label_pts = [
-    ("Cairo",       31.24, 30.04),
-    ("Alexandria",  29.92, 31.20),
-    ("Rosetta",     30.42, 31.40),
-    ("Damietta",    31.82, 31.42),
-    ("Port Said",   32.28, 31.26),
-    ("Ismailia",    32.27, 30.59),
-    ("Suez",        32.55, 29.97),
-    ("Lake Manzala", 31.95, 31.26),
-    ("L. Burullus", 30.95, 31.50),
-    ("L. Bardawil", 33.10, 31.15),
-    ("El Arish",    33.80, 31.13),
-    ("Rafah",       34.24, 31.29),
-    ("Taba",        34.89, 29.50),
+    ("Cairo",        31.24, 30.04),
+    ("Alexandria",   29.92, 31.20),
+    ("Rosetta",      30.42, 31.40),
+    ("Damietta",     31.82, 31.42),
+    ("Port Said",    32.28, 31.26),
+    ("Ismailia",     32.27, 30.59),
+    ("Suez",         32.55, 29.97),
+    ("L. Manzala",   31.95, 31.32),
+    ("L. Burullus",  30.95, 31.50),
+    ("L. Bardawil",  33.10, 31.20),
+    ("El Arish",     33.80, 31.13),
+    ("Rafah",        34.24, 31.29),
+    ("Taba",         34.89, 29.50),
 ]
 for (name, lon, lat) in label_pts
-    scatter!(ax, [lon], [lat]; color=:black, marker=:circle, markersize=6,
-             strokewidth=0.6, strokecolor=:white)
-    text!(ax, name; position=(lon+0.05, lat+0.05), fontsize=8,
-          color=:black, strokecolor=:white, strokewidth=1.5, font=:regular)
+    scatter!(ax, [lon], [lat]; color=:black, marker=:circle, markersize=5)
+    text!(ax, name; position=(lon + 0.05, lat + 0.05),
+          fontsize=8, color=:black, font=:regular,
+          align=(:left, :bottom))
 end
 
 xlims!(ax, bbox.lon_min, bbox.lon_max)
 ylims!(ax, bbox.lat_min, bbox.lat_max)
 
-# Legend
+# ── Legend ──────────────────────────────────────────────────────────────────
+
+# Swatches sampled from the actual hypsometric ramp so the legend matches
+# what's on the map (approximating the low/high land entries).
+elev_low  = shade(hypsometric(5f0),   220f0)
+elev_mid  = shade(hypsometric(100f0), 220f0)
+elev_high = shade(hypsometric(700f0), 220f0)
+
 elems = [
     PolyElement(color=OCEAN_BLUE),
-    PolyElement(color=SEA_BLUE),
     PolyElement(color=LAKE_BLUE),
-    PolyElement(color=RGBf(0.55,0.55,0.55)),
-    PolyElement(color=RGBf(0.92,0.92,0.92)),
+    PolyElement(color=shade(SEA_BLUE, 220f0)),
+    PolyElement(color=elev_low),
+    PolyElement(color=elev_mid),
+    PolyElement(color=elev_high),
 ]
 labels = ["Sea (Mediterranean / Red Sea)",
-          "Land below sea level (< 0 m)",
           "Lakes & lagoons",
-          "Land — low",
-          "Land — high"]
-Legend(fig[1, 2], elems, labels; framevisible=false, labelsize=9, patchsize=(14,10))
+          "Land below sea level (< 0 m)",
+          "Delta (< 20 m)",
+          "Uplands (20–300 m)",
+          "Mountains (300–1200 m)"]
+Legend(fig[1, 2], elems, labels; framevisible=false, labelsize=9,
+       patchsize=(14, 10))
 colgap!(fig.layout, 8)
 
 # ── Save ────────────────────────────────────────────────────────────────────
