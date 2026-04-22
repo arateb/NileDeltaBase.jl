@@ -4,8 +4,15 @@ authors = ["Ashraf Rateb <arateb@utexas.edu>"]
 version = "0.1.0"
 
 [deps]
+ColorTypes = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
 Shapefile = "8e980c4a-a4fe-5da2-b3a7-4b4b0353a2f4"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
 
 [compat]
 julia = "1.10"

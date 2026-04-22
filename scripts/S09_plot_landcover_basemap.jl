@@ -39,79 +39,10 @@ NDB.set_root!(get(ENV, "NILEDELTABASE_ROOT", "/data4/EGY/NileDeltaBase"))
 const ROOT     = NDB._root()
 const DISPDIR  = joinpath(ROOT, "data/derived/display")
 const SHOREDIR = joinpath(ROOT, "data/raw/shoreline")
-const DEM_TIF  = joinpath(DISPDIR, "nile_elevation_display_ext.tif")
-const HLS_TIF  = joinpath(DISPDIR, "nile_hillshade_display_ext.tif")
-const LMSK_TIF = joinpath(DISPDIR, "nile_landmask_display_ext.tif")
-const WC_TIF   = joinpath(DISPDIR, "nile_worldcover_display_ext.tif")
 
-for f in (DEM_TIF, HLS_TIF, LMSK_TIF, WC_TIF)
-    isfile(f) || error("Missing $f — run S06b_derived_display_ext.sh and S05c_download_worldcover.sh first")
-end
-
-# Extended bbox (matches S06b output, S05c clip).
-const BBOX_EXT = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.7)
+# Extended bbox (matches S06b output, S05c clip, NDB.BBOX_EXT).
+const BBOX_EXT = NDB.BBOX_EXT
 const DRES = 0.003
-
-# ── Raster I/O (ENVI via GDAL CLI) ──────────────────────────────────────────
-
-function _read_envi(tif, ::Type{T}) where T
-    info = read(`gdalinfo -json $tif`, String)
-    m = match(r"\"size\":\s*\[\s*(\d+),\s*(\d+)\s*\]", info)
-    nx = parse(Int, m[1]); ny = parse(Int, m[2])
-    ot  = T == UInt8 ? "Byte" : "Float32"
-    bin = tempname() * ".bin"
-    run(pipeline(`gdal_translate -of ENVI -ot $ot $tif $bin`; stderr=devnull))
-    data = Array{T}(undef, nx, ny)
-    read!(bin, data)
-    rm(bin; force=true)
-    rm(bin * ".aux.xml"; force=true)
-    rm(replace(bin, ".bin" => ".hdr"); force=true)
-    arr = Matrix{T}(undef, ny, nx)
-    for r in 1:ny
-        arr[r, :] = data[:, ny - r + 1]
-    end
-    return arr, nx, ny
-end
-
-function _make_coords(nx, ny)
-    lons = collect(range(BBOX_EXT.lon_min + DRES/2, BBOX_EXT.lon_max - DRES/2; length=nx))
-    lats = collect(range(BBOX_EXT.lat_min + DRES/2, BBOX_EXT.lat_max - DRES/2; length=ny))
-    return lons, lats
-end
-
-function load_dem()
-    arr, nx, ny = _read_envi(DEM_TIF, Float32)
-    info = read(`gdalinfo -json $DEM_TIF`, String)
-    m_nd = match(r"\"noDataValue\":\s*([-\d.eE+]+)", info)
-    nd   = m_nd !== nothing ? parse(Float32, m_nd[1]) : -9999f0
-    arr[arr .== nd]       .= NaN32
-    arr[abs.(arr) .> 1f4] .= NaN32
-    lons, lats = _make_coords(nx, ny)
-    return arr, lons, lats
-end
-
-function load_hillshade()
-    raw_u8, _, _ = _read_envi(HLS_TIF, UInt8)
-    raw = Float32.(raw_u8) ./ 255f0
-    valid = filter(x -> x > 0.01f0, raw[:])
-    lo, hi = isempty(valid) ? (0f0, 1f0) : (quantile(valid, 0.01), quantile(valid, 0.99))
-    span = max(hi - lo, 0.01f0)
-    out = similar(raw)
-    for i in eachindex(raw)
-        out[i] = raw[i] > 0.01f0 ? clamp((raw[i] - lo) / span, 0f0, 1f0) : 0f0
-    end
-    return out
-end
-
-function load_landmask()
-    arr, _, _ = _read_envi(LMSK_TIF, UInt8)
-    return arr
-end
-
-function load_worldcover()
-    arr, _, _ = _read_envi(WC_TIF, UInt8)
-    return arr
-end
 
 # ── Shapefile vector loading (Handle: skip DBF) ─────────────────────────────
 
@@ -167,80 +98,10 @@ function load_coastline_vector()
     return read_shp_segments(shp)
 end
 
-# ── WorldCover → color lookup ───────────────────────────────────────────────
-# Class codes:
-#   10 tree cover   20 shrubland   30 grassland    40 cropland
-#   50 built-up     60 bare/sparse 70 snow/ice     80 perm. water
-#   90 herb. wetland 95 mangroves  100 moss/lichen
-#
-# Tints are chosen low-saturation so the shaded relief still reads through.
-const WC_CROPLAND = RGBAf(0.55, 0.70, 0.30, 0.55)   # olive-green
-const WC_BUILT    = RGBAf(0.70, 0.35, 0.25, 0.70)   # warm brown
-const WC_TREE     = RGBAf(0.25, 0.55, 0.25, 0.50)   # dark green
-const WC_SHRUB    = RGBAf(0.50, 0.60, 0.30, 0.40)   # muted olive
-const WC_GRASS    = RGBAf(0.65, 0.75, 0.40, 0.40)   # pale yellow-green
-const WC_WATER    = RGBAf(0.30, 0.50, 0.75, 0.80)   # blue (lakes/canals)
-const WC_WETLAND  = RGBAf(0.40, 0.60, 0.65, 0.60)   # teal
-
-@inline function wc_tint(code::UInt8)
-    code == 0x28 && return WC_CROPLAND   # 40
-    code == 0x32 && return WC_BUILT      # 50
-    code == 0x0A && return WC_TREE       # 10
-    code == 0x14 && return WC_SHRUB      # 20
-    code == 0x1E && return WC_GRASS      # 30
-    code == 0x50 && return WC_WATER      # 80
-    code == 0x5A && return WC_WETLAND    # 90
-    return RGBAf(0, 0, 0, 0)             # bare/other → transparent
-end
-
-@inline function alpha_blend(base::RGBAf, top::RGBAf)
-    a = top.alpha
-    (a == 0) && return base
-    r = base.r * (1 - a) + top.r * a
-    g = base.g * (1 - a) + top.g * a
-    b = base.b * (1 - a) + top.b * a
-    return RGBAf(r, g, b, 1.0)
-end
-
-# ── Shaded relief composition (base layer) ──────────────────────────────────
-
-function shaded_relief_base(elev, hs, landmask; vmin=0f0, vmax=200f0)
-    ny, nx = size(elev)
-    img = Matrix{RGBAf}(undef, ny, nx)
-    for j in 1:nx, i in 1:ny
-        v = elev[i, j]
-        if isnan(v) || landmask[i, j] == 0x00
-            img[i, j] = RGBAf(0.96, 0.96, 0.98, 1.0)
-        else
-            t = clamp((v - vmin) / (vmax - vmin), 0f0, 1f0)
-            if v < 0
-                r = 0.90f0; g = 0.92f0; b = 0.96f0
-            else
-                g_base = Float32(1.0 - 0.82 * t)
-                r = g_base; g = g_base; b = g_base
-            end
-            h = 0.35f0 + 0.65f0 * hs[i, j]
-            img[i, j] = RGBAf(r * h, g * h, b * h, 1.0)
-        end
-    end
-    return img
-end
-
-# ── Composite: shaded relief + WorldCover tint (land only) ──────────────────
-
-function compose_basemap(elev, hs, lmsk, wc; vmin=0f0, vmax=200f0)
-    base = shaded_relief_base(elev, hs, lmsk; vmin=vmin, vmax=vmax)
-    ny, nx = size(base)
-    img = similar(base)
-    for j in 1:nx, i in 1:ny
-        if lmsk[i, j] == 0x00
-            img[i, j] = base[i, j]   # keep water pale
-        else
-            img[i, j] = alpha_blend(base[i, j], wc_tint(wc[i, j]))
-        end
-    end
-    return img
-end
+# ── Basemap composition now lives in NileDeltaBase.Basemap (reusable). ──────
+# Pull the WorldCover tints locally for the legend.
+using NileDeltaBase.Basemap: WC_CROPLAND, WC_BUILT, WC_TREE, WC_SHRUB,
+                             WC_GRASS, WC_WATER, WC_WETLAND, compose_basemap
 
 # ── Overlays ────────────────────────────────────────────────────────────────
 
@@ -349,7 +210,7 @@ function subset(data::Matrix, lons::Vector, lats::Vector, bbox)
 end
 
 function plot_region(region::Symbol;
-                     elev, hs, lmsk, wc, lons, lats,
+                     elev, hs, lmsk, wc, bathy, lons, lats,
                      rivers, borders, coastline,
                      outdir="results/figures",
                      show_cropland_legend=true)
@@ -364,8 +225,10 @@ function plot_region(region::Symbol;
     h_sub,  _,  _  = subset(hs,   lons, lats, bbox)
     l_sub,  _,  _  = subset(lmsk, lons, lats, bbox)
     w_sub,  _,  _  = subset(wc,   lons, lats, bbox)
+    b_sub = bathy === nothing ? nothing : subset(bathy, lons, lats, bbox)[1]
 
-    img = compose_basemap(e_sub, h_sub, l_sub, w_sub; vmin=0f0, vmax=vmax)
+    img = compose_basemap(e_sub, h_sub, l_sub, w_sub;
+                           bathy=b_sub, vmin=0f0, vmax=vmax)
 
     map_wh = (bbox.lon_max - bbox.lon_min) / (bbox.lat_max - bbox.lat_min)
     fig = FigStd.figure(width=:wide, aspect=1.0 / map_wh * 1.12)
@@ -419,11 +282,11 @@ function plot_region(region::Symbol;
 end
 
 function main()
-    @info "Loading rasters..."
-    elev, lons, lats = load_dem()
-    hs   = load_hillshade()
-    lmsk = load_landmask()
-    wc   = load_worldcover()
+    @info "Loading basemap inputs (elev/hillshade/landmask/WC/bathymetry)..."
+    bi = NDB.load_basemap(; bbox=BBOX_EXT, dres=DRES, with_bathy=true)
+    elev, hs, lmsk, wc, bathy = bi.elev, bi.hs, bi.landmask, bi.wc, bi.bathy
+    lons, lats = bi.lons, bi.lats
+    bathy === nothing || @info "bathymetry loaded" size=size(bathy)
 
     @info "Loading vector overlays..."
     rivers    = load_rivers_vector()
@@ -435,7 +298,7 @@ function main()
                :manzala, :port_said, :ismailia, :cairo, :central]
     @info "Rendering" n=length(regions) regions
     for r in regions
-        plot_region(r; elev=elev, hs=hs, lmsk=lmsk, wc=wc,
+        plot_region(r; elev=elev, hs=hs, lmsk=lmsk, wc=wc, bathy=bathy,
                        lons=lons, lats=lats,
                        rivers=rivers, borders=borders, coastline=coastline,
                        outdir=outdir)

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Build the priority-stacked fused VRT from ingested layers.
 # Priority (low → high, last wins in gdalbuildvrt):
-#   cop_glo30 → fabdem → deltadtm   [fused_30m]
-#   + tandemx12                      [fused_12m, future]
-#   + earthdem2                      [fused_2m,  future]
+#   gmrt_bathy → cop_glo30 → fabdem → deltadtm   [fused_30m]
+#   + tandemx12                                  [fused_12m, future]
+#
+# GMRT at the bottom supplies offshore bathymetry where the 30 m land DEMs
+# declare nodata; on land the higher-priority layers overwrite it.
 
 set -euo pipefail
 
@@ -56,10 +58,12 @@ else
   echo "[mask] DeltaDTM masked raster up-to-date" | tee -a "$LOG"
 fi
 
-# ── fused_30m: priority GLO30 → FABDEM → DeltaDTM(masked) ────────────
-# Build file list in priority order (later entries win)
+# ── fused_30m: priority (GMRT) → GLO30 → FABDEM → DeltaDTM(masked) ──
+# Build file list in priority order (later entries win).  GMRT is
+# included only if S11 has been run.
 FLIST="$ROOT/data/filelists/fused_30m_sources.txt"
 {
+  [[ -f "$VRT/gmrt_nile.vrt" ]] && echo "$VRT/gmrt_nile.vrt"
   echo "$VRT/cop_glo30_nile.vrt"
   echo "$VRT/fabdem_nile.vrt"
   echo "$VRT/deltadtm_nile_masked.vrt"
@@ -79,6 +83,7 @@ gdalinfo "$VRT/nile_dem_fused_30m.vrt" | grep -E "(Size is|Pixel Size)" | tee -a
 if [[ -f "$VRT/tandemx12_nile.vrt" ]]; then
   FL12="$ROOT/data/filelists/fused_12m_sources.txt"
   {
+    [[ -f "$VRT/gmrt_nile.vrt" ]] && echo "$VRT/gmrt_nile.vrt"
     echo "$VRT/cop_glo30_nile.vrt"
     echo "$VRT/fabdem_nile.vrt"
     echo "$VRT/deltadtm_nile_masked.vrt"
@@ -88,22 +93,6 @@ if [[ -f "$VRT/tandemx12_nile.vrt" ]]; then
     -input_file_list "$FL12" \
     "$VRT/nile_dem_fused_12m.vrt" 2>&1 | tee -a "$LOG"
   echo "fused_12m: $VRT/nile_dem_fused_12m.vrt" | tee -a "$LOG"
-fi
-
-# ── fused_2m: stub (includes EarthDEM 2 m strips when acquired) ──────
-if [[ -f "$VRT/earthdem2_nile.vrt" ]]; then
-  FL2="$ROOT/data/filelists/fused_2m_sources.txt"
-  {
-    echo "$VRT/cop_glo30_nile.vrt"
-    echo "$VRT/fabdem_nile.vrt"
-    echo "$VRT/deltadtm_nile_masked.vrt"
-    [[ -f "$VRT/tandemx12_nile.vrt" ]] && echo "$VRT/tandemx12_nile.vrt"
-    echo "$VRT/earthdem2_nile.vrt"
-  } > "$FL2"
-  gdalbuildvrt -overwrite -resolution highest -r bilinear \
-    -input_file_list "$FL2" \
-    "$VRT/nile_dem_fused_2m.vrt" 2>&1 | tee -a "$LOG"
-  echo "fused_2m: $VRT/nile_dem_fused_2m.vrt" | tee -a "$LOG"
 fi
 
 echo "Finished: $(date -u +%FT%TZ)" | tee -a "$LOG"

@@ -4,18 +4,19 @@
 Access layer for a priority-stacked DEM covering the Nile Delta, Egypt.
 
 Current stack (low → high priority, last wins):
+  GMRT bathymetry/topography (multibeam + SRTM, ~100 m offshore)   [ocean only]
   Copernicus GLO-30 (30 m DSM, TanDEM-X-derived)
   FABDEM v1.2 (30 m bare-earth, ML veg/building removal from GLO-30)
   DeltaDTM v1.1 (30 m coastal bare-earth, Pronk et al. 2024, ICESat-2/GEDI-corrected)
 
-Future layers (set up but empty until acquired):
-  TanDEM-X 12 m (DLR science proposal)
-  EarthDEM 2 m strips (NASA CSDA / PGC, WorldView-derived)
+Future layers:
+  TanDEM-X 12 m (DLR science proposal, pending access)
 
 Vertical datum: orthometric heights relative to EGM2008 (source-native for all
-30 m layers). No datum conversion applied — the Delta is <20 m, vertical
-differences between EGM2008 and WGS84 ellipsoid across the region are ~10 m
-absolute but near-constant relative to InSAR baselines.
+30 m layers). GMRT bathymetry is MSL-referenced (~equivalent to EGM2008 in the
+Mediterranean to <1 m). No datum conversion applied — the Delta is <20 m,
+vertical differences between EGM2008 and WGS84 ellipsoid across the region are
+~10 m absolute but near-constant relative to InSAR baselines.
 
 # Setup
     using NileDeltaBase
@@ -30,15 +31,21 @@ absolute but near-constant relative to InSAR baselines.
 """
 module NileDeltaBase
 
-export BBOX, HOTSPOTS, FRAMES, LAYERS,
+export BBOX, BBOX_EXT, HOTSPOTS, FRAMES, LAYERS,
        vrt_path, display_path, results_path,
        sample_elevation, sample_elevation_batch,
-       load_display,
+       sample_elevation_cached, warm_cache!, clear_cache!,
+       load_display, load_basemap,
        classify_lecz, in_hotspot, in_frame, best_layer, in_bbox,
        subset, subset_hotspot, extract_region, extract_hotspot, extract_frame,
-       resolution_source_map
+       resolution_source_map,
+       dem_for_frame, sample_dem_at_points
 
 using Statistics
+
+include("Basemap.jl")
+using .Basemap
+export Basemap, BasemapInputs, compose_basemap, shaded_relief_base
 
 # ── Configurable project root ────────────────────────────────────────
 
@@ -93,6 +100,8 @@ _logdir()   = joinpath(_root(), "logs")
 # Alexandria / West Nubaria (west) → Port Said / Suez Canal mouth (east).
 # ~310 km × 180 km ≈ 56,000 km².
 const BBOX = (lon_min=29.6, lat_min=30.0, lon_max=32.4, lat_max=31.65)
+# Extended display bbox — Dabaa → Port Said, shared with S06b / S09.
+const BBOX_EXT = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.7)
 const DRES_DISPLAY = 0.01   # ~1 km display grid
 
 # Sentinel-1 InSAR frames currently processed
@@ -120,15 +129,14 @@ const HOTSPOTS = (
 
 const LAYERS = (
     # Priority-fused VRTs
-    fused_2m   = "nile_dem_fused_2m.vrt",    # + EarthDEM 2 m where available (future)
     fused_12m  = "nile_dem_fused_12m.vrt",   # + TanDEM-X 12 m (future)
-    fused_30m  = "nile_dem_fused_30m.vrt",   # GLO30 ← FABDEM ← DeltaDTM (last wins)
+    fused_30m  = "nile_dem_fused_30m.vrt",   # GMRT ← GLO30 ← FABDEM ← DeltaDTM (last wins)
     # Per-source VRTs
+    gmrt       = "gmrt_nile.vrt",
     cop_glo30  = "cop_glo30_nile.vrt",
     fabdem     = "fabdem_nile.vrt",
     deltadtm   = "deltadtm_nile.vrt",
     tandemx12  = "tandemx12_nile.vrt",
-    earthdem2  = "earthdem2_nile.vrt",
 )
 
 # ── Path accessors ───────────────────────────────────────────────────
@@ -196,11 +204,10 @@ end
     best_layer(lon, lat) → Symbol
 
 Highest-resolution fused layer available. Currently `:fused_30m` everywhere;
-future `:fused_12m` / `:fused_2m` once TanDEM-X / EarthDEM are ingested.
+future `:fused_12m` once TanDEM-X is ingested.
 """
 function best_layer(lon::Real, lat::Real)
     # Future: check TanDEM-X footprint → :fused_12m
-    # Future: check EarthDEM strip footprints → :fused_2m
     return :fused_30m
 end
 
@@ -414,8 +421,9 @@ end
     resolution_source_map(; res=0.01) → (src_map, lons, lats)
 
 Pixel-wise source-provenance map for the fused product.
-Codes: 0=nodata, 1=COP-GLO30 (30 m DSM), 2=FABDEM (30 m bare-earth),
-       3=DeltaDTM (30 m coastal DTM), 4=TanDEM-X (12 m), 5=EarthDEM (2 m).
+Codes: 0=nodata, 1=GMRT (bathy), 2=COP-GLO30 (30 m DSM),
+       3=FABDEM (30 m bare-earth), 4=DeltaDTM (30 m coastal DTM),
+       5=TanDEM-X (12 m, future).
 
 Coverage is inferred from the presence of each layer's VRT/filelist.
 """
@@ -428,8 +436,8 @@ function resolution_source_map(; res::Real=0.01)
     src_map = zeros(Int8, ny, nx)
 
     # Priority: later layers overwrite earlier ones (matches fusion order)
-    layer_codes = [(:cop_glo30, Int8(1)), (:fabdem, Int8(2)), (:deltadtm, Int8(3)),
-                   (:tandemx12, Int8(4)), (:earthdem2, Int8(5))]
+    layer_codes = [(:gmrt, Int8(1)), (:cop_glo30, Int8(2)), (:fabdem, Int8(3)),
+                   (:deltadtm, Int8(4)), (:tandemx12, Int8(5))]
 
     for (layer, code) in layer_codes
         vrt = vrt_path(layer)
@@ -463,6 +471,152 @@ function resolution_source_map(; res::Real=0.01)
     end
 
     return src_map, lons, lats
+end
+
+# ── In-memory cache for fast repeated sampling ──────────────────────
+#
+# `sample_elevation_batch` spawns one `gdallocationinfo` subprocess per
+# call (~100 ms per invocation on a warm filesystem).  For bulk InSAR PS
+# sampling (10k+ points) that adds up.  The cache loads a full display
+# raster into RAM once and does in-memory bilinear interpolation.
+
+mutable struct _RasterCache
+    layer::Symbol
+    res::Float64
+    bbox::NamedTuple
+    data::Matrix{Float32}
+    lons::Vector{Float64}
+    lats::Vector{Float64}
+end
+
+const _CACHE = Ref{Union{Nothing, _RasterCache}}(nothing)
+
+"""
+    warm_cache!(; layer=:fused_30m, res=0.0025, bbox=BBOX_EXT) → Matrix
+
+Load a layer into RAM for fast repeated point sampling. Default grid is
+~275 m at the extended bbox (~1800×680 Float32, ~5 MB).  Returns the
+loaded matrix.
+"""
+function warm_cache!(; layer::Symbol=:fused_30m, res::Real=0.0025,
+                      bbox::NamedTuple=BBOX_EXT)
+    arr, lons, lats = _extract_vrt(vrt_path(layer),
+                                    (bbox.lon_min, bbox.lon_max),
+                                    (bbox.lat_min, bbox.lat_max),
+                                    Float64(res))
+    _CACHE[] = _RasterCache(layer, Float64(res), bbox, arr, lons, lats)
+    return arr
+end
+
+"""
+    clear_cache!()
+"""
+clear_cache!() = (_CACHE[] = nothing; nothing)
+
+@inline function _bilinear(c::_RasterCache, lon::Float64, lat::Float64)
+    (lon < c.bbox.lon_min || lon > c.bbox.lon_max ||
+     lat < c.bbox.lat_min || lat > c.bbox.lat_max) && return NaN32
+    fx = (lon - c.lons[1]) / c.res
+    fy = (lat - c.lats[1]) / c.res
+    j0 = floor(Int, fx) + 1
+    i0 = floor(Int, fy) + 1
+    j1 = min(j0 + 1, size(c.data, 2))
+    i1 = min(i0 + 1, size(c.data, 1))
+    j0 = max(j0, 1); i0 = max(i0, 1)
+    ax = Float32(fx - (j0 - 1)); ay = Float32(fy - (i0 - 1))
+    v00 = c.data[i0, j0]; v01 = c.data[i0, j1]
+    v10 = c.data[i1, j0]; v11 = c.data[i1, j1]
+    (isnan(v00) || isnan(v01) || isnan(v10) || isnan(v11)) && return NaN32
+    return (1-ax)*(1-ay)*v00 + ax*(1-ay)*v01 + (1-ax)*ay*v10 + ax*ay*v11
+end
+
+"""
+    sample_elevation_cached(lons, lats) → Vector{Float32}
+
+Bilinear-interpolate the warmed cache at N points. ~3000× faster than
+`sample_elevation_batch` for 10k+ points (no subprocess, no disk I/O).
+Call `warm_cache!()` first.
+"""
+function sample_elevation_cached(lons::AbstractVector, lats::AbstractVector)
+    length(lons) == length(lats) || throw(DimensionMismatch("lons/lats length"))
+    c = _CACHE[]
+    c === nothing && error("Cache not warmed — call warm_cache!() first")
+    out = Vector{Float32}(undef, length(lons))
+    @inbounds for i in eachindex(lons)
+        out[i] = _bilinear(c, Float64(lons[i]), Float64(lats[i]))
+    end
+    return out
+end
+
+sample_elevation_cached(lon::Real, lat::Real) =
+    sample_elevation_cached([Float64(lon)], [Float64(lat)])[1]
+
+# ── SARMotion / InSAR integration helpers ──────────────────────────
+
+"""
+    dem_for_frame(frame::Symbol, layer::Symbol=:fused_30m;
+                  res=1/3600, out_path=nothing) → String
+
+Clip the fused DEM to an InSAR frame's footprint and write a GeoTIFF
+ready to be used as `EQA.dem_par` input (SARMotion / LiCSBAS).  Defaults
+to `results/<frame>_<layer>.tif` if `out_path` is nothing.
+"""
+function dem_for_frame(frame::Symbol, layer::Symbol=:fused_30m;
+                       res::Real=1/3600,
+                       out_path::Union{String, Nothing}=nothing)
+    fr = getfield(FRAMES, frame)
+    out = out_path !== nothing ? out_path :
+          joinpath(_resdir(), "dem", "$(frame)_$(layer).tif")
+    mkpath(dirname(out))
+    run(`gdalwarp -overwrite
+         -t_srs EPSG:4326
+         -te $(Float64(fr.lon[1])) $(Float64(fr.lat[1]))
+             $(Float64(fr.lon[2])) $(Float64(fr.lat[2]))
+         -tr $(Float64(res)) $(Float64(res))
+         -r bilinear -wo NUM_THREADS=ALL_CPUS
+         -of GTiff -ot Float32 -dstnodata -9999
+         -co TILED=YES -co COMPRESS=DEFLATE
+         $(vrt_path(layer)) $out`)
+    return out
+end
+
+"""
+    sample_dem_at_points(lons, lats; layer=:fused_30m, use_cache=true) → Vector{Float32}
+
+Sample the DEM at N point locations (e.g., InSAR PS or SBAS pixels).
+If `use_cache=true` and the cache is warmed, uses in-memory bilinear;
+otherwise falls back to `gdallocationinfo` batch sampling.
+
+Returns a `Vector{Float32}` with `NaN32` for out-of-coverage points.
+"""
+function sample_dem_at_points(lons::AbstractVector, lats::AbstractVector;
+                              layer::Symbol=:fused_30m,
+                              use_cache::Bool=true)
+    if use_cache
+        c = _CACHE[]
+        (c !== nothing && c.layer === layer) ||
+            warm_cache!(; layer=layer)
+        return sample_elevation_cached(lons, lats)
+    else
+        coords = [(Float64(lons[i]), Float64(lats[i])) for i in eachindex(lons)]
+        vs = sample_elevation_batch(layer, coords)
+        return Float32[v === nothing ? NaN32 : Float32(v) for v in vs]
+    end
+end
+
+# ── Basemap convenience wrapper ─────────────────────────────────────
+
+"""
+    load_basemap(; bbox=BBOX_EXT, dres=0.003, with_bathy=true) → BasemapInputs
+
+Load all display rasters (elevation/hillshade/landmask/WorldCover/bathymetry)
+from `data/derived/display/` and return a `BasemapInputs` struct. Used by
+S09 and external projects that want the Delta basemap as a backdrop.
+"""
+function load_basemap(; bbox::NamedTuple=BBOX_EXT, dres::Real=0.003,
+                       with_bathy::Bool=true)
+    return Basemap.load_basemap_inputs(_dispdir(), bbox, dres;
+                                        with_bathy=with_bathy)
 end
 
 end # module

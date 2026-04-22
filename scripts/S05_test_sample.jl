@@ -33,7 +33,7 @@ println(rpad("Location", 22), " ", rpad("lon", 9), " ", rpad("lat", 9), " ",
         rpad("expected", 10), " ", rpad("fused_30m", 11), " layer")
 println("-"^95)
 
-for layer in (:fused_30m, :cop_glo30, :fabdem, :deltadtm)
+for layer in (:fused_30m, :gmrt, :cop_glo30, :fabdem, :deltadtm)
     vrt = NileDeltaBase.vrt_path(layer)
     if !isfile(vrt)
         @info "skipping $layer — VRT not built yet" vrt
@@ -56,6 +56,6 @@ total  = length(src)
 println("Total pixels (0.05°): $total, covered: $pixels ($(round(100*pixels/total, digits=1))%)")
 for code in 1:5
     n = sum(src .== code)
-    label = ("COP-GLO30", "FABDEM", "DeltaDTM", "TanDEM-X 12m", "EarthDEM 2m")[code]
+    label = ("GMRT bathy", "COP-GLO30", "FABDEM", "DeltaDTM", "TanDEM-X 12m")[code]
     n > 0 && println("  code $code ($label): $n pixels")
 end
