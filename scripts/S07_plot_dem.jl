@@ -1,11 +1,11 @@
 #!/usr/bin/env julia
-# Publication figure of the fused Nile Delta + North Sinai DEM.
-# Single RGB image built as hypsometric tint × hillshade:
+# Publication figure of the fused Nile Delta DEM.
+# Single RGB image built as hypsometric tint × hillshade over *every* valid
+# land pixel (including below-sea-level polders) — the DEM itself defines the
+# coastline.  Only true water bodies carry non-DEM colour:
 #   - ocean (NaN pixels connected to the bbox boundary) → OCEAN_BLUE
 #   - enclosed NaN (lakes / lagoons)                    → LAKE_BLUE
-#   - land with elevation < 0                           → SEA_BLUE tinted
-#   - land with elevation ≥ 0                           → terrain palette
-# Coastline is therefore defined by the DEM itself (no Natural Earth overlay).
+# Everything else is hypsometric(elev) × shade(hillshade, slope).
 
 using Pkg
 Pkg.activate(dirname(@__DIR__))
@@ -74,75 +74,83 @@ ny, nx = size(elev)
 
 valid    = .!isnan.(elev)
 invalid  = .!valid
-below    = valid .& (elev .< 0f0)
 
 @info "Grid" size=(ny, nx) lon=(first(lons), last(lons)) lat=(first(lats), last(lats))
 @info "Elevation stats" min=minimum(elev[valid]) max=maximum(elev[valid]) median=median(elev[valid])
 @info "Hillshade stats" min=minimum(hlsh[valid]) max=maximum(hlsh[valid]) median=median(hlsh[valid])
-@info "Pixels below 0 m: $(sum(below))"
 
-# Percentile stretch of the hillshade — most of the bbox is the ~0-slope
-# Delta, which compresses the raw gdaldem distribution into a narrow band
-# near ~180.  Stretch p2..p98 across [0, 1] so the genuine variation (Sinai
-# relief, Delta escarpment, canal levees) shows up on the map.
-hlsh_vals = filter(!isnan, hlsh[valid])
-h_p2  = Float32(quantile(hlsh_vals, 0.02))
-h_p98 = Float32(quantile(hlsh_vals, 0.98))
-h_range = max(h_p98 - h_p2, 1f0)
-hlsh_n  = clamp.((hlsh .- h_p2) ./ h_range, 0f0, 1f0)
-@info "Hillshade stretch" p2=h_p2 p98=h_p98 range=h_range
+# Use the raw hillshade — a percentile stretch would compress the desert's
+# true variation (the Delta is flat, so p2/p98 covers only a narrow band
+# and real escarpments saturate).  With -z 4 the native [0, 255] range
+# already separates flat Delta (~180–210) from the jebels (< 120).
+hlsh_n = clamp.(hlsh ./ 255f0, 0f0, 1f0)
 
-# Slope-darkening multiplier — steep slopes (≳ 15°) get visibly darker even
-# after hillshade stretch.  Slopes are in degrees; clamp to [0, 35] and map
-# to an extra attenuation in [0, 0.35].
+# Slope-darkening multiplier — steep slopes (≳ 15°) get visibly darker.
+# Slopes are in degrees; clamp to [0, 35] and map to [0, 1].
 slp_n  = clamp.(slp ./ 35f0, 0f0, 1f0)
 slp_n[invalid] .= 0f0
 
-# ── Classify water: ocean = NaN connected to bbox boundary; lake = enclosed NaN
+# ── Classify the Mediterranean only ─────────────────────────────────────────
+# Flood-fill from the north edge with a strict |elev| ≤ tol criterion so
+# the Delta lagoons' negative bathymetry doesn't leak through.  The
+# lagoons themselves appear naturally in the hypsometric tint.
 
-function _flood_boundary!(ocean::AbstractMatrix{Bool}, invalid::AbstractMatrix{Bool})
-    ny, nx = size(invalid)
+function _flood_sea_strict!(sea::AbstractMatrix{Bool},
+                            elev::AbstractMatrix{Float32};
+                            tol::Float32=0.01f0)
+    ny, nx = size(elev)
     q = Tuple{Int,Int}[]
     for j in 1:nx
-        if invalid[1,  j]; ocean[1,  j] = true; push!(q, (1,  j)); end
-        if invalid[ny, j]; ocean[ny, j] = true; push!(q, (ny, j)); end
-    end
-    for i in 1:ny
-        if invalid[i, 1 ]; ocean[i, 1 ] = true; push!(q, (i, 1 )); end
-        if invalid[i, nx]; ocean[i, nx] = true; push!(q, (i, nx)); end
+        e = elev[ny, j]
+        if !isnan(e) && abs(e) <= tol
+            sea[ny, j] = true
+            push!(q, (ny, j))
+        end
     end
     head = 1
     while head <= length(q)
         i, j = q[head]; head += 1
         for (di, dj) in ((-1,0),(1,0),(0,-1),(0,1))
             ni, nj = i+di, j+dj
-            if 1 <= ni <= ny && 1 <= nj <= nx && invalid[ni,nj] && !ocean[ni,nj]
-                ocean[ni,nj] = true
-                push!(q, (ni, nj))
+            if 1 <= ni <= ny && 1 <= nj <= nx && !sea[ni, nj]
+                e = elev[ni, nj]
+                if !isnan(e) && abs(e) <= tol
+                    sea[ni, nj] = true
+                    push!(q, (ni, nj))
+                end
             end
         end
     end
 end
 
 ocean = falses(ny, nx)
-_flood_boundary!(ocean, invalid)
-lake = invalid .& .!ocean
-@info "Water classes" ocean=sum(ocean) lake=sum(lake) below_sea_land=sum(below)
+_flood_sea_strict!(ocean, elev)
+ocean .|= invalid
+lake = falses(ny, nx)
+@info "Water classes" ocean=sum(ocean) lake=sum(lake)
 
 # ── Colour palette ──────────────────────────────────────────────────────────
 
 const OCEAN_BLUE = RGBf(0.55, 0.73, 0.88)
-const SEA_BLUE   = RGBf(0.33, 0.57, 0.80)   # land below sea level (SEA_BLUE tint)
 const LAKE_BLUE  = RGBf(0.12, 0.28, 0.52)   # lakes / lagoons (darker, distinct)
 
-# Hypsometric tint — pale green coastal → tan → brown → gray peaks
+# Hypsometric tint — densely sampled across the Delta's *actual* elevation
+# range (≈ −25 m to +170 m).  Wider stops make the Delta look like one flat
+# green blob, so we squeeze most of the palette into the 0–50 m band where
+# almost all the variability lives.  Every stop is a clearly distinct hue
+# so the gradient is visible even in the flat plain.
 const HYPSO_STOPS = [
-    (0f0,    RGBf(0.82, 0.90, 0.72)),   # coastal green
-    (20f0,   RGBf(0.92, 0.93, 0.68)),   # pale yellow
-    (100f0,  RGBf(0.90, 0.82, 0.58)),   # tan
-    (300f0,  RGBf(0.78, 0.64, 0.42)),   # brown
-    (700f0,  RGBf(0.58, 0.44, 0.30)),   # dark brown
-    (1300f0, RGBf(0.78, 0.72, 0.68)),   # gray peaks
+    (-25f0,  RGBf(0.30, 0.20, 0.50)),   # deep indigo (subsidence hotspots)
+    (-10f0,  RGBf(0.45, 0.40, 0.70)),   # violet
+    (-2f0,   RGBf(0.60, 0.68, 0.85)),   # pale periwinkle
+    (0f0,    RGBf(0.78, 0.90, 0.80)),   # coastal green
+    (3f0,    RGBf(0.60, 0.82, 0.55)),   # bright green (Delta plain)
+    (8f0,    RGBf(0.82, 0.90, 0.55)),   # yellow-green
+    (15f0,   RGBf(0.96, 0.90, 0.52)),   # pale yellow
+    (25f0,   RGBf(0.94, 0.78, 0.45)),   # tan
+    (50f0,   RGBf(0.84, 0.62, 0.38)),   # brown
+    (100f0,  RGBf(0.68, 0.46, 0.28)),   # dark brown
+    (170f0,  RGBf(0.46, 0.32, 0.22)),   # deep brown (desert peaks)
 ]
 
 @inline function hypsometric(e::Float32)
@@ -160,13 +168,12 @@ const HYPSO_STOPS = [
     return HYPSO_STOPS[end][2]
 end
 
-# Hillshade-derived intensity in [0.35, 1.15] (values > 1 get clamped after
-# channel multiply).  Steep slopes further attenuate by up to 0.35, so
-# Sinai escarpments and ridgelines read as proper shadows.
+# Hillshade × slope darkening.  Multiplier in ~[0.1, 1.15]; the low end is
+# intentionally dark so desert jebels and escarpments read as real shadows.
 @inline function shade(c::RGBf, hn::Float32, sn::Float32)
     hn = isnan(hn) ? 0.5f0 : hn
-    s  = 0.35f0 + 0.80f0 * hn - 0.35f0 * sn
-    s  = clamp(s, 0f0, 1.15f0)
+    s  = 0.10f0 + 1.05f0 * hn - 0.35f0 * sn
+    s  = clamp(s, 0.05f0, 1.15f0)
     RGBf(clamp(c.r * s, 0f0, 1f0),
          clamp(c.g * s, 0f0, 1f0),
          clamp(c.b * s, 0f0, 1f0))
@@ -180,8 +187,6 @@ rgb = Matrix{RGBf}(undef, ny, nx)
         rgb[i, j] = OCEAN_BLUE
     elseif lake[i, j]
         rgb[i, j] = LAKE_BLUE
-    elseif below[i, j]
-        rgb[i, j] = shade(SEA_BLUE, hlsh_n[i, j], slp_n[i, j])
     else
         rgb[i, j] = shade(hypsometric(elev[i, j]), hlsh_n[i, j], slp_n[i, j])
     end
@@ -203,8 +208,17 @@ ax = Axis(fig[1, 1];
 image!(ax, (first(lons), last(lons)), (first(lats), last(lats)),
        permutedims(rgb); interpolate=false)
 
-# Country borders only (coastline comes from the DEM mask itself).  Convert
-# FeatureCollection → basic geometries so plotting works on a plain Axis.
+# DEM-derived shorelines — contour the (ocean ∪ lake) mask.
+water_f = Matrix{Float32}(undef, ny, nx)
+@inbounds for i in 1:ny, j in 1:nx
+    water_f[i, j] = (ocean[i, j] || lake[i, j]) ? 1f0 : 0f0
+end
+contour!(ax, lons, lats, permutedims(water_f);
+         levels=[0.5f0], color=RGBf(0.10, 0.10, 0.10),
+         linewidth=0.7)
+
+# Country borders (dashed).  Convert FeatureCollection → basic geometries so
+# plotting works on a plain Axis.
 function _plot_lines!(ax, fc; color, linewidth=0.5, linestyle=:solid)
     for feature in fc
         geom = GeoMakie.geo2basic(feature.geometry)
@@ -256,25 +270,26 @@ ylims!(ax, bbox.lat_min, bbox.lat_max)
 # ── Legend ──────────────────────────────────────────────────────────────────
 
 # Swatches sampled from the actual hypsometric ramp so the legend matches
-# what's on the map (approximating the low/high land entries).
-elev_low  = shade(hypsometric(5f0),   0.75f0, 0f0)
-elev_mid  = shade(hypsometric(100f0), 0.75f0, 0f0)
-elev_high = shade(hypsometric(700f0), 0.75f0, 0f0)
-
+# what is on the map.  Elevations chosen to hit each stop band.
+_sw(e, h) = shade(hypsometric(Float32(e)), Float32(h), 0f0)
 elems = [
     PolyElement(color=OCEAN_BLUE),
-    PolyElement(color=LAKE_BLUE),
-    PolyElement(color=shade(SEA_BLUE, 0.75f0, 0f0)),
-    PolyElement(color=elev_low),
-    PolyElement(color=elev_mid),
-    PolyElement(color=elev_high),
+    PolyElement(color=_sw(-15, 0.75)),
+    PolyElement(color=_sw(-3,  0.75)),
+    PolyElement(color=_sw(2,   0.75)),
+    PolyElement(color=_sw(10,  0.75)),
+    PolyElement(color=_sw(30,  0.75)),
+    PolyElement(color=_sw(80,  0.75)),
+    PolyElement(color=_sw(160, 0.75)),
 ]
-labels = ["Sea (Mediterranean / Red Sea)",
-          "Lakes & lagoons",
-          "Land below sea level (< 0 m)",
-          "Delta (< 20 m)",
-          "Uplands (20–300 m)",
-          "Mountains (300–1200 m)"]
+labels = ["Sea (Mediterranean)",
+          "Subsidence hotspots (< −10 m)",
+          "Reclaimed below sea (−10 to 0 m)",
+          "Delta flats (0–5 m)",
+          "Delta plain (5–20 m)",
+          "Gentle uplands (20–50 m)",
+          "Desert margins (50–120 m)",
+          "Jebels (> 120 m)"]
 Legend(fig[1, 2], elems, labels; framevisible=false, labelsize=9,
        patchsize=(14, 10))
 colgap!(fig.layout, 8)

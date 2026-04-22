@@ -28,6 +28,8 @@ DEM="$DISP/nile_elevation_display.tif"
 HLS="$DISP/nile_hillshade_display.tif"
 SLP="$DISP/nile_slope_display.tif"
 BZR="$DISP/nile_below_zero_display.tif"
+LMSK="$DISP/nile_landmask_display.tif"
+GSHHG_L1="$ROOT/data/raw/shoreline/gshhg_GSHHS_f_L1_nile.shp"
 
 echo "[warp] display DEM at ${RES}° (~330 m)" | tee -a "$LOG"
 gdalwarp -overwrite \
@@ -39,12 +41,11 @@ gdalwarp -overwrite \
   -co TILED=YES -co COMPRESS=DEFLATE \
   "$VRT" "$DEM" 2>&1 | tail -5 | tee -a "$LOG"
 
-echo "[hillshade] multidirectional, -s 111120 (deg→m scaling), z=2" | tee -a "$LOG"
-# -s 111120   : horizontal scale — lon/lat are in degrees, elevation in m
-# -z 2        : vertical exaggeration — boosts relief on the flat Delta
-# -igor       : drops the hard dark side of standard hillshade, keeps both
-#               sides lit (better for cartographic backgrounds)
-gdaldem hillshade -multidirectional -s 111120 -z 2 \
+echo "[hillshade] multidirectional, -s 111120 (deg→m scaling), z=4" | tee -a "$LOG"
+# -s 111120 : horizontal scale — lon/lat are in degrees, elevation in m
+# -z 4      : strong vertical exaggeration — desert escarpments around the
+#             Delta need this to read as relief at 330 m grid spacing.
+gdaldem hillshade -multidirectional -s 111120 -z 4 \
   -co TILED=YES -co COMPRESS=DEFLATE \
   "$DEM" "$HLS" 2>&1 | tail -3 | tee -a "$LOG"
 
@@ -61,6 +62,21 @@ gdal_calc.py \
   --type=Byte --NoDataValue=0 \
   --co='TILED=YES' --co='COMPRESS=DEFLATE' \
   --overwrite 2>&1 | tail -3 | tee -a "$LOG"
+
+echo "[landmask] rasterize GSHHG L1 land polygon at ${RES}°" | tee -a "$LOG"
+if [[ -f "$GSHHG_L1" ]]; then
+  # Single-shot rasterize: init=0, burn=1 for land polygons.  -at (all-touched)
+  # captures narrow lagoon spits that a centroid-only rule would miss.
+  gdal_rasterize -burn 1 -init 0 -at \
+    -te $XMIN $YMIN $XMAX $YMAX \
+    -tr $RES $RES \
+    -ot Byte -a_nodata 255 \
+    -l "$(basename "$GSHHG_L1" .shp)" \
+    -co TILED=YES -co COMPRESS=DEFLATE \
+    "$GSHHG_L1" "$LMSK" 2>&1 | tail -3 | tee -a "$LOG"
+else
+  echo "SKIP: $GSHHG_L1 missing — run S05b_download_shoreline.jl" | tee -a "$LOG"
+fi
 
 echo "" | tee -a "$LOG"
 echo "Outputs:" | tee -a "$LOG"

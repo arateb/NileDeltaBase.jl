@@ -31,13 +31,38 @@ if [[ $need_ok -eq 0 ]]; then
   exit 1
 fi
 
-# ── fused_30m: priority GLO30 → FABDEM → DeltaDTM ────────────────────
+# ── Mask DeltaDTM saturation ────────────────────────────────────────
+# DeltaDTM is a delta-only product that SATURATES at exactly 30 m for any
+# pixel above 30 m (a known design choice — the dataset is intended for
+# below-plus-just-above sea-level mapping).  If we stack the raw raster as
+# top priority, every hill/escarpment in the bbox gets truncated to 30 m
+# because DeltaDTM's "nodata here" zones actually return 30 rather than
+# the declared NoDataValue.  Pre-mask: any pixel ≥ 30 → -9999 nodata so
+# the fusion falls through to FABDEM/COP-GLO30 for uplands.
+DELTADTM_RAW="$ROOT/data/raw/deltadtm/deltadtm_nile_clipped.tif"
+DELTADTM_MSK="$ROOT/data/raw/deltadtm/deltadtm_nile_masked.tif"
+if [[ -f "$DELTADTM_RAW" ]] && [[ ! -f "$DELTADTM_MSK" || "$DELTADTM_RAW" -nt "$DELTADTM_MSK" ]]; then
+  echo "[mask] DeltaDTM saturation (pixels ≥ 30 → nodata)" | tee -a "$LOG"
+  gdal_calc.py \
+    -A "$DELTADTM_RAW" \
+    --outfile="$DELTADTM_MSK" \
+    --calc='where(A < 30, A, -9999)' \
+    --type=Float32 --NoDataValue=-9999 \
+    --co='TILED=YES' --co='COMPRESS=DEFLATE' --co='BIGTIFF=IF_SAFER' \
+    --overwrite 2>&1 | tail -3 | tee -a "$LOG"
+  gdalbuildvrt -overwrite "$VRT/deltadtm_nile_masked.vrt" "$DELTADTM_MSK" \
+    2>&1 | tail -2 | tee -a "$LOG"
+else
+  echo "[mask] DeltaDTM masked raster up-to-date" | tee -a "$LOG"
+fi
+
+# ── fused_30m: priority GLO30 → FABDEM → DeltaDTM(masked) ────────────
 # Build file list in priority order (later entries win)
 FLIST="$ROOT/data/filelists/fused_30m_sources.txt"
 {
   echo "$VRT/cop_glo30_nile.vrt"
   echo "$VRT/fabdem_nile.vrt"
-  echo "$VRT/deltadtm_nile.vrt"
+  echo "$VRT/deltadtm_nile_masked.vrt"
 } > "$FLIST"
 
 gdalbuildvrt -overwrite \
@@ -56,7 +81,7 @@ if [[ -f "$VRT/tandemx12_nile.vrt" ]]; then
   {
     echo "$VRT/cop_glo30_nile.vrt"
     echo "$VRT/fabdem_nile.vrt"
-    echo "$VRT/deltadtm_nile.vrt"
+    echo "$VRT/deltadtm_nile_masked.vrt"
     echo "$VRT/tandemx12_nile.vrt"
   } > "$FL12"
   gdalbuildvrt -overwrite -resolution highest -r bilinear \
@@ -71,7 +96,7 @@ if [[ -f "$VRT/earthdem2_nile.vrt" ]]; then
   {
     echo "$VRT/cop_glo30_nile.vrt"
     echo "$VRT/fabdem_nile.vrt"
-    echo "$VRT/deltadtm_nile.vrt"
+    echo "$VRT/deltadtm_nile_masked.vrt"
     [[ -f "$VRT/tandemx12_nile.vrt" ]] && echo "$VRT/tandemx12_nile.vrt"
     echo "$VRT/earthdem2_nile.vrt"
   } > "$FL2"
