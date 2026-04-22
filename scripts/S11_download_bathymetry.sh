@@ -51,7 +51,7 @@ DEPTH_EXT="$DISPDIR/nile_bathymetry_display_ext.tif"
 echo "[warp] bathy clip — ext bbox" | tee -a "$LOG"
 gdalwarp -overwrite \
   -t_srs EPSG:4326 \
-  -te 28.0 30.0 32.5 31.7 \
+  -te 28.0 30.0 32.5 32.5 \
   -tr 0.003 0.003 \
   -r bilinear -wo NUM_THREADS=ALL_CPUS \
   -of GTiff -ot Float32 -dstnodata -9999 \

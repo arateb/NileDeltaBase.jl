@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Extended-bbox display products (Dabaa → Suez Canal, 28.0–32.5°E, 30.0–31.7°N).
+# Extended-bbox display products (Dabaa → Suez Canal, 28.0–32.5°E, 30.0–32.5°N).
 # Produces the same set as S06 but at the wider extent, with "_ext" suffix:
 #   nile_elevation_display_ext.tif    bilinear-resampled DEM
 #   nile_hillshade_display_ext.tif    gdaldem hillshade (multidirectional)
@@ -25,7 +25,7 @@ echo "Started: $(date -u +%FT%TZ)" | tee -a "$LOG"
 [[ -f "$VRT" ]] || { echo "Missing $VRT — run S04 first" | tee -a "$LOG"; exit 1; }
 
 # Extended bbox: west to Dabaa (~28.5°E) + buffer, east unchanged.
-XMIN=28.0; YMIN=30.0; XMAX=32.5; YMAX=31.7
+XMIN=28.0; YMIN=30.0; XMAX=32.5; YMAX=32.5
 RES=0.003   # ~330 m display grid
 
 DEM="$DISP/nile_elevation_display_ext.tif"

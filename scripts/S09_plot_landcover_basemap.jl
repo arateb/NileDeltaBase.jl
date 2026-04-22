@@ -169,7 +169,6 @@ const CITIES = [
     ("Banha",         31.18, 30.46),
     ("Kafr el-Sheikh",30.94, 31.11),
     ("Dabaa",         28.48, 31.04),
-    ("Marsa Matruh*", 28.05, 31.35),
     ("El Alamein",    28.96, 30.83),
 ]
 
@@ -186,17 +185,17 @@ const LAKES = [
 # higher vmax to avoid everything clamping to black).
 
 const ZOOMS = Dict(
-    :full       => (bbox=BBOX_EXT,                                              title="Nile Delta — Dabaa → Port Said",            vmax=200),
-    :dabaa      => (bbox=(lon_min=28.10, lat_min=30.80, lon_max=28.90, lat_max=31.30), title="Dabaa coast",                                vmax=150),
-    :alexandria => (bbox=(lon_min=29.70, lat_min=31.10, lon_max=30.20, lat_max=31.35), title="Alexandria & L. Mariout",                    vmax=80),
-    :rosetta    => (bbox=(lon_min=30.25, lat_min=31.30, lon_max=30.70, lat_max=31.55), title="Rosetta promontory",                         vmax=60),
-    :burullus   => (bbox=(lon_min=30.45, lat_min=31.30, lon_max=31.25, lat_max=31.60), title="Lake Burullus",                              vmax=60),
-    :damietta   => (bbox=(lon_min=31.55, lat_min=31.30, lon_max=31.95, lat_max=31.55), title="Damietta promontory",                        vmax=60),
-    :manzala    => (bbox=(lon_min=31.55, lat_min=31.00, lon_max=32.35, lat_max=31.45), title="Lake Manzala",                               vmax=60),
-    :port_said  => (bbox=(lon_min=32.10, lat_min=31.10, lon_max=32.45, lat_max=31.35), title="Port Said & Suez Canal mouth",               vmax=60),
-    :ismailia   => (bbox=(lon_min=32.10, lat_min=30.40, lon_max=32.45, lat_max=30.80), title="Ismailia & Suez Canal",                      vmax=100),
-    :cairo      => (bbox=(lon_min=30.90, lat_min=29.95, lon_max=31.60, lat_max=30.35), title="Greater Cairo & Delta apex",                 vmax=200),
-    :central    => (bbox=(lon_min=30.70, lat_min=30.50, lon_max=31.70, lat_max=31.20), title="Central Delta — Tanta / Mansoura / Zagazig", vmax=60),
+    :full       => (bbox=BBOX_EXT,                                                      title="Nile Delta — Dabaa → Port Said",            vmax=200, dmax=2500, isobaths=Float32[-2000, -1000, -500, -200, -100, -50]),
+    :dabaa      => (bbox=(lon_min=28.10, lat_min=30.80, lon_max=28.90, lat_max=31.30), title="Dabaa coast",                                vmax=150, dmax=300,  isobaths=Float32[-200, -100, -50, -20]),
+    :alexandria => (bbox=(lon_min=29.70, lat_min=31.10, lon_max=30.20, lat_max=31.35), title="Alexandria & L. Mariout",                    vmax=80,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :rosetta    => (bbox=(lon_min=30.25, lat_min=31.30, lon_max=30.70, lat_max=31.55), title="Rosetta promontory",                         vmax=60,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :burullus   => (bbox=(lon_min=30.45, lat_min=31.30, lon_max=31.25, lat_max=31.60), title="Lake Burullus",                              vmax=60,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :damietta   => (bbox=(lon_min=31.55, lat_min=31.30, lon_max=31.95, lat_max=31.55), title="Damietta promontory",                        vmax=60,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :manzala    => (bbox=(lon_min=31.55, lat_min=31.00, lon_max=32.35, lat_max=31.45), title="Lake Manzala",                               vmax=60,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :port_said  => (bbox=(lon_min=32.10, lat_min=31.10, lon_max=32.45, lat_max=31.35), title="Port Said & Suez Canal mouth",               vmax=60,  dmax=200,  isobaths=Float32[-100, -50, -20]),
+    :ismailia   => (bbox=(lon_min=32.10, lat_min=30.40, lon_max=32.45, lat_max=30.80), title="Ismailia & Suez Canal",                      vmax=100, dmax=200,  isobaths=Float32[]),
+    :cairo      => (bbox=(lon_min=30.90, lat_min=29.95, lon_max=31.60, lat_max=30.35), title="Greater Cairo & Delta apex",                 vmax=200, dmax=200,  isobaths=Float32[]),
+    :central    => (bbox=(lon_min=30.70, lat_min=30.50, lon_max=31.70, lat_max=31.20), title="Central Delta — Tanta / Mansoura / Zagazig", vmax=60,  dmax=200,  isobaths=Float32[]),
 )
 
 # ── Plot dispatcher ─────────────────────────────────────────────────────────
@@ -220,6 +219,8 @@ function plot_region(region::Symbol;
     bbox  = info.bbox
     title = info.title
     vmax  = Float32(info.vmax)
+    dmax  = Float32(get(info, :dmax, 2000))
+    isobaths = get(info, :isobaths, Float32[])
 
     e_sub,  lo, la = subset(elev, lons, lats, bbox)
     h_sub,  _,  _  = subset(hs,   lons, lats, bbox)
@@ -228,7 +229,7 @@ function plot_region(region::Symbol;
     b_sub = bathy === nothing ? nothing : subset(bathy, lons, lats, bbox)[1]
 
     img = compose_basemap(e_sub, h_sub, l_sub, w_sub;
-                           bathy=b_sub, vmin=0f0, vmax=vmax)
+                           bathy=b_sub, vmin=0f0, vmax=vmax, dmax=dmax)
 
     map_wh = (bbox.lon_max - bbox.lon_min) / (bbox.lat_max - bbox.lat_min)
     fig = FigStd.figure(width=:wide, aspect=1.0 / map_wh * 1.12)
@@ -239,6 +240,19 @@ function plot_region(region::Symbol;
 
     image!(ax, (lo[1], lo[end]), (la[1], la[end]),
            permutedims(img); interpolate=false)
+
+    # Isobaths on top of the image (ocean + major lakes)
+    if b_sub !== nothing && !isempty(isobaths)
+        bathy_plot = copy(b_sub)
+        @inbounds for i in eachindex(bathy_plot)
+            v = bathy_plot[i]
+            (isnan(v) || v >= 0) && (bathy_plot[i] = NaN32)
+        end
+        contour!(ax, lo, la, permutedims(bathy_plot);
+                 levels=isobaths,
+                 color=RGBAf(0.10, 0.20, 0.45, 0.55),
+                 linewidth=0.4)
+    end
 
     lon_range = (bbox.lon_min, bbox.lon_max)
     lat_range = (bbox.lat_min, bbox.lat_max)

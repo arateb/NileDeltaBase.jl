@@ -31,7 +31,7 @@ const TMPDIR   = joinpath(ROOT, "data", "derived", "residuals")
 mkpath(TMPDIR)
 
 # Extended bbox & resolution — share with S06b / S09
-const BBOX = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.7)
+const BBOX = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=32.5)
 const DRES = 0.003
 
 function warp_to_grid(vrt, out_tif)

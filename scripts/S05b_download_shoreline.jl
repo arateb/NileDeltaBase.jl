@@ -18,7 +18,7 @@ const OUTDIR = joinpath(ROOT, "data/raw/shoreline")
 # Two passes so both S08 and S09 can run without re-downloading GSHHG.
 const BBOXES = [
     (suffix="nile", bbox=(lon_min=29.6, lat_min=30.0, lon_max=32.4, lat_max=31.65)),
-    (suffix="ext",  bbox=(lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.70)),
+    (suffix="ext",  bbox=(lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=32.50)),
 ]
 
 const SOURCES = [

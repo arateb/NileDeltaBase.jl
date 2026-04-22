@@ -101,7 +101,7 @@ _logdir()   = joinpath(_root(), "logs")
 # ~310 km × 180 km ≈ 56,000 km².
 const BBOX = (lon_min=29.6, lat_min=30.0, lon_max=32.4, lat_max=31.65)
 # Extended display bbox — Dabaa → Port Said, shared with S06b / S09.
-const BBOX_EXT = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.7)
+const BBOX_EXT = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=32.5)
 const DRES_DISPLAY = 0.01   # ~1 km display grid
 
 # Sentinel-1 InSAR frames currently processed

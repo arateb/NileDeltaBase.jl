@@ -91,12 +91,13 @@ function shaded_relief_base(elev::AbstractMatrix, hs::AbstractMatrix,
             end
             img[i, j] = RGBAf(g_base * h, g_base * h, g_base * h, 1.0)
         else
-            # Ocean / outside landmask
+            # Ocean / outside landmask — do NOT apply hillshade modulation:
+            # the DEM on water is noise, and shading introduces visual
+            # stripes. Flat bathy colour preserves the depth gradient cleanly.
             if bathy !== nothing
                 b = bathy[i, j]
                 if !isnan(b) && b < 0
-                    c = bathy_color(-b; dmax=dmax)
-                    img[i, j] = RGBAf(c.r * h, c.g * h, c.b * h, 1.0)
+                    img[i, j] = bathy_color(-b; dmax=dmax)
                     continue
                 end
             end
@@ -107,21 +108,38 @@ function shaded_relief_base(elev::AbstractMatrix, hs::AbstractMatrix,
 end
 
 """
-    compose_basemap(elev, hs, landmask, wc; bathy=nothing, kwargs...)
+    compose_basemap(elev, hs, landmask, wc; bathy=nothing,
+                    lake_depth=1.5, lake_dmax=5.0, kwargs...)
 
-Shaded relief base, then overlay WorldCover tints on land. Water stays as
-bathymetry/ocean. Returns `Matrix{RGBAf}`.
+Shaded relief base, then:
+  * on land (landmask==1) + WorldCover permanent water (class 80) → shallow
+    lake bathymetry colour (fixed `lake_depth`, shallow ramp `lake_dmax`).
+    GMRT does not cover inland lagoons (Manzala, Burullus, Idku, Mariout)
+    so we render them at a nominal 1–2 m using the same pale-cyan ramp as
+    the shallow shelf, giving visual continuity with the Mediterranean.
+  * on land + other WorldCover classes → alpha-blend the class tint.
+  * off land (ocean) → shaded-relief base (already bathy-coloured).
+
+Returns `Matrix{RGBAf}`.
 """
 function compose_basemap(elev::AbstractMatrix, hs::AbstractMatrix,
                          landmask::AbstractMatrix, wc::AbstractMatrix;
                          bathy::Union{Nothing, AbstractMatrix}=nothing,
+                         lake_depth::Real=1.5,
+                         lake_dmax::Real=5.0,
                          kwargs...)
     base = shaded_relief_base(elev, hs, landmask; bathy=bathy, kwargs...)
     ny, nx = size(base)
     img = similar(base)
+    lake_c = bathy_color(Float32(lake_depth); dmax=Float32(lake_dmax))
     @inbounds for j in 1:nx, i in 1:ny
         if landmask[i, j] == 0x01
-            img[i, j] = alpha_blend(base[i, j], wc_tint(wc[i, j]))
+            if wc[i, j] == 0x50   # WorldCover permanent water → lake
+                # Flat shallow-water colour (no hillshade — DEM inside lakes is noise)
+                img[i, j] = lake_c
+            else
+                img[i, j] = alpha_blend(base[i, j], wc_tint(wc[i, j]))
+            end
         else
             img[i, j] = base[i, j]
         end

@@ -31,7 +31,7 @@ const OUTDIR = joinpath(ROOT, "results", "figures")
 # resolution_source_map uses the narrow BBOX internally; call the generic
 # warp pipeline directly for the ext bbox.
 
-const BBOX = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=31.7)
+const BBOX = (lon_min=28.0, lat_min=30.0, lon_max=32.5, lat_max=32.5)
 const DRES = 0.01
 
 function build_source_map()

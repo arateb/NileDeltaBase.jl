@@ -3,10 +3,17 @@
 Priority-stacked DEM access layer for the Nile Delta, Egypt. Pattern and API
 mirror [GulfBase.jl](https://github.com/arateb/GulfBase.jl).
 
+![Nile Delta basemap — Dabaa → Port Said](docs/images/nile_basemap_full.png)
+
+_Shaded-relief + ESA WorldCover + GMRT bathymetry. Cropland (olive-green),
+built-up (brown), trees/wetland (green/cyan), Mediterranean depth ramp with
+50/100/200/500/1000 m isobaths. Inland lagoons (Manzala, Burullus, Idku,
+Mariout) shown as shallow water._
+
 ## Coverage
 
 Core bbox: **29.0–35.1°E, 29.3–31.8°N** (~680 km × 275 km, ~187,000 km²).
-Extended display bbox: **28.0–32.5°E, 30.0–31.7°N** (Dabaa → Port Said).
+Extended display bbox: **28.0–32.5°E, 30.0–32.5°N** (Dabaa → Herodotus basin).
 
 Covers Cairo (south) → Mediterranean (north), and Alexandria / west-Nubaria
 (west) → Taba at the Gulf of Aqaba (east). Includes the Nile Delta, the

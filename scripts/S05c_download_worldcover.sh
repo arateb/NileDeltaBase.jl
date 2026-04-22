@@ -11,7 +11,7 @@
 # Naming:         ESA_WorldCover_10m_2021_v200_<N..E..>.tif where N.. is SW lat
 #                 (multiples of 3, e.g. N30), E.. is SW lon (multiples of 3, e.g. E027).
 #
-# For bbox 28.0–32.5°E, 30.0–31.7°N we need one 3×3 tile: N30E027 (covers 27–30°E)
+# For bbox 28.0–32.5°E, 30.0–32.5°N we need one 3×3 tile: N30E027 (covers 27–30°E)
 # plus N30E030 (covers 30–33°E).
 
 set -euo pipefail
@@ -51,7 +51,7 @@ gdalbuildvrt -overwrite \
 
 # Clip to the extended display bbox at the display resolution.  Use nearest-
 # neighbour so class codes are preserved (Byte).
-XMIN=28.0; YMIN=30.0; XMAX=32.5; YMAX=31.7
+XMIN=28.0; YMIN=30.0; XMAX=32.5; YMAX=32.5
 RES=0.003
 CLIP="$ROOT/data/derived/display/nile_worldcover_display_ext.tif"
 echo "[warp] WorldCover clip at ${RES}° (nearest)" | tee -a "$LOG"
